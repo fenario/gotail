@@ -5,71 +5,65 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	//"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/pkg/errors"
 )
 
-var watcher *fsnotify.Watcher
+var (
+	// offset how many bytes to move. can be positive or negative
+	offset int64 = -1024
+	//whence is the point of reference of the offset
+	// 0 - beginning of file
+	// 1 - current position of file
+	// 2 - end of file
+	whence  = 2
+	watcher *fsnotify.Watcher
+)
 
 func main() {
 	watcher, _ = fsnotify.NewWatcher()
 	defer watcher.Close()
 
 	//line := flag.Int("lines", 50, "an int")
-	dir := flag.String("dir", "", "a filename")
-	f := flag.String("file", "", "a directory")
+	dir := flag.String("dir", "", "A directory that contains files")
+	f := flag.String("file", "", "a file for reading")
 	flag.Parse()
 
 	fmt.Println("File: ", *f)
 	fmt.Println("Dir:", *dir)
 
-	var file *os.File
-	var err error
-	if *f != "" {
-		file, err = os.Open(*f)
-		if err != nil {
-			fmt.Println("Error ", errors.Wrap(err, "opening file"))
-			os.Exit(0)
-		}
-		defer file.Close()
-	}
-	// offset how many bytes to move. can be positive or negative
-	var offset int64 = 5
+	done := make(chan bool)
+	go func() {
+		for {
+			//time.Sleep(2 * time.Second)
+			select {
+			case event := <-watcher.Events:
+				fmt.Println(event.Name)
+				b, _ := readFile(event.Name)
+				fmt.Println(string(b))
 
-	//whence is the point of reference of the offset
-	// 0 - beginning of file
-	// 1 - current position of file
-	// 2 - end of file
-	var whence = 0
+			case err := <-watcher.Errors:
+				fmt.Println(err)
+			}
+		}
+	}()
 
 	if *dir != "" {
-		filepath.Walk(*dir, watchDir)
+		if err := filepath.Walk(*dir, watchDir); err != nil {
+			fmt.Println("Walk dir error: ", err)
+		}
 	}
 
-	newPos, err := file.Seek(offset, whence)
-	if err != nil {
-		fmt.Println(err)
+	if *f != "" {
+		err := watcher.Add(*f)
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
-	buf := make([]byte, 1024)
-	n, err := file.ReadAt(buf, 0)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	fmt.Println(string(buf[:n]))
-
-	fmt.Println("JUst moved to 5: ", newPos)
-
-	//go back 2 bytes from the current position
-	newPos, err = file.Seek(-2, 1)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	fmt.Println("Just moved back two: ", newPos)
+	<-done
 }
 
 func watchDir(path string, fi os.FileInfo, err error) error {
@@ -77,6 +71,40 @@ func watchDir(path string, fi os.FileInfo, err error) error {
 		return watcher.Add(path)
 	}
 	return nil
+}
+
+func readFile(f string) ([]byte, error) {
+	var (
+		file     *os.File
+		err      error
+		stat     os.FileInfo
+		numBytes int
+	)
+	buf := make([]byte, 1022)
+
+	file, err = os.Open(f)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	stat, err = file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	newPos, err := file.Seek(offset, whence)
+	fmt.Println("Len:", stat.Size())
+	fmt.Println("NewPos:", newPos)
+	if err != nil {
+		return nil, err
+	}
+
+	numBytes, err = file.ReadAt(buf, newPos)
+	if err != nil {
+		return nil, err
+	}
+	return buf[:numBytes], nil
 }
 
 func connect(ip, user, pwd string) (*ssh.Session, error) {
